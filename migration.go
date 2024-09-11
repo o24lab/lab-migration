@@ -20,16 +20,17 @@ import (
 	"pkg/ddd"
 	"pkg/errorx"
 	"pkg/types"
+	"sync"
 	"time"
 )
 
-const workerNum = 1000
+const workerNum = 10000
 
 var (
-	userWallets = map[int32]*model.WinUserWallet{}
-	kycs        = map[int32][]model.WinUserKyc{}
-	deposits    = map[int32]map[int64]*model.WinCoinDepositRecord{}
-	withdraws   = map[int32]map[int64]*model.WinCoinWithdrawalRecord{}
+	userWallets = sync.Map{}
+	kycs        = sync.Map{}
+	deposits    = sync.Map{}
+	withdraws   = sync.Map{}
 )
 
 func Migrate() errorx.Error {
@@ -41,7 +42,7 @@ func Migrate() errorx.Error {
 	data, err := func() ([]*model.WinUser, errorx.Error) {
 		var err error
 		db := oldmain.Use(clientz.MainDB()).WinUser
-		data, err := db.Where(db.Mobile.Neq("9993334444")).Find()
+		data, err := db.Find()
 		if err != nil {
 			return nil, errorx.WithStack(err)
 		}
@@ -61,10 +62,9 @@ func Migrate() errorx.Error {
 		wp.Submit(*item)
 	}
 	wp.Start(func(winUser1 model.WinUser) error {
-		u, err := User(&winUser1)
-		if err != nil {
-			logrus.Error(errorx.WithStack(err))
-			return nil
+		u, err1 := User(&winUser1)
+		if err1 != nil {
+			return err1
 		}
 		go func() {
 			err1 := Kyc(u)
@@ -72,7 +72,7 @@ func Migrate() errorx.Error {
 				logrus.Error(errorx.WithStack(err1))
 			}
 		}()
-		l := logrus.WithField("new user", u.ID).WithField("old user", u.User.ID)
+		l := logrus.WithField("newUser", u.ID).WithField("oldUser", u.User.ID)
 		winCoinLogs, err := func() ([]*model.WinCoinLog, errorx.Error) {
 			var err1 error
 			db := oldsharding.Use(clientz.ShardingDB()).WinCoinLog
@@ -119,15 +119,15 @@ func Migrate() errorx.Error {
 			switch winCoinLog.Category {
 			case 1:
 				d := func() *model.WinCoinDepositRecord {
-					d1, ok := deposits[winCoinLog.UID]
+					val, ok := deposits.Load(winCoinLog.ReferID)
 					if !ok {
 						return nil
 					}
-					d2, ok := d1[winCoinLog.ReferID]
+					record, ok := val.(model.WinCoinDepositRecord)
 					if !ok {
 						return nil
 					}
-					return d2
+					return &record
 				}()
 				if d != nil {
 					err2 := coinLog1.WithDeposit(d).Deposit()
@@ -137,15 +137,15 @@ func Migrate() errorx.Error {
 				}
 			case 2:
 				d := func() *model.WinCoinWithdrawalRecord {
-					d1, ok := withdraws[winCoinLog.UID]
+					val, ok := withdraws.Load(winCoinLog.ReferID)
 					if !ok {
 						return nil
 					}
-					d2, ok := d1[winCoinLog.ReferID]
+					record, ok := val.(model.WinCoinWithdrawalRecord)
 					if !ok {
 						return nil
 					}
-					return d2
+					return &record
 				}()
 				if d != nil {
 					err2 := coinLog1.WithWithdrawal(d).Withdraw()
@@ -225,18 +225,25 @@ func Migrate() errorx.Error {
 				l.Error(errorx.WithStack(err1))
 				return err1
 			}
-			wallet, ok := userWallets[u.User.ID]
-			if ok {
-				dif := decimal.NewFromFloat(wallet.Coin).Sub(b.Available)
-				if !dif.IsZero() {
-					_, err2 := balance.RecordService.Request(newDDDCtx(u.ID), balance.RecordCommand{
-						Action: balance.ActionAdjust,
-						Amount: dif,
-						Force:  true,
-					})
-					if err2 != nil {
-						l.Error(errorx.WithStack(err2))
-					}
+			val, ok := userWallets.Load(u.User.ID)
+			if !ok {
+				err2 := errorx.New(fmt.Sprintf("user=%v wallet not exist", u.User.ID))
+				return err2
+			}
+			wallet, ok := val.(model.WinUserWallet)
+			if !ok {
+				err2 := errorx.New("data format error")
+				return err2
+			}
+			dif := decimal.NewFromFloat(wallet.Coin).Sub(b.Available)
+			if !dif.IsZero() {
+				_, err2 := balance.RecordService.Request(newDDDCtx(u.ID), balance.RecordCommand{
+					Action: balance.ActionAdjust,
+					Amount: dif,
+					Force:  true,
+				})
+				if err2 != nil {
+					l.Error(errorx.WithStack(err2))
 				}
 			}
 		}
@@ -249,12 +256,12 @@ func Migrate() errorx.Error {
 
 func User(m *model.WinUser) (*WinUser, errorx.Error) {
 	{
-		winUser, err := userCollection.GetOne(bson.M{"user.id": m.ID})
+		winUser, err := UserCollection.GetOne(bson.M{"user.id": m.ID})
 		if err != nil && !errorx.ErrDataNotFound.Is(err) {
 			return nil, err
 		}
 		if winUser != nil {
-			return winUser, nil
+			return nil, errorx.New("user already existed")
 		}
 	}
 	{
@@ -273,7 +280,7 @@ func User(m *model.WinUser) (*WinUser, errorx.Error) {
 				},
 				User: *m,
 			}
-			err = userCollection.Create(&u)
+			err = UserCollection.Create(&u)
 			if err != nil {
 				return nil, err
 			}
@@ -323,7 +330,7 @@ func User(m *model.WinUser) (*WinUser, errorx.Error) {
 		},
 		User: *m,
 	}
-	err = userCollection.Create(&u)
+	err = UserCollection.Create(&u)
 	if err != nil {
 		return nil, err
 	}
@@ -331,18 +338,19 @@ func User(m *model.WinUser) (*WinUser, errorx.Error) {
 }
 
 func Kyc(user *WinUser) errorx.Error {
-	_, ok := kycs[user.User.ID]
+	val, ok := kycs.Load(user.User.ID)
 	if !ok {
-		return nil
+		return errorx.New("kyc not exist")
 	}
-	if len(kycs[user.User.ID]) == 0 {
+	userKycs := val.([]model.WinUserKyc)
+	if len(userKycs) == 0 {
 		return nil
 	}
 	wp := worker.New[model.WinUserKyc](workerNum, worker.WithErrHandler[model.WinUserKyc](func(err error) {
 		//logrus.Error(err)
 	}))
 	wp.Start(func(data model.WinUserKyc) error {
-		l := logrus.WithField("new user", user.ID).WithField("old user", user.User.ID)
+		l := logrus.WithField("newUser", user.ID).WithField("oldUser", user.User.ID)
 		cmd := kyc.ApplyCommand{}
 		cmd.IDType = func() *kyc.IDType { i := kyc.IDTypeIDCard; return &i }()
 		{
@@ -456,7 +464,7 @@ func Kyc(user *WinUser) errorx.Error {
 		}
 		return nil
 	})
-	for _, item := range kycs[user.User.ID] {
+	for _, item := range userKycs {
 		wp.Submit(item)
 	}
 	wp.Stop()
@@ -551,52 +559,81 @@ func Init() errorx.Error {
 		if err != nil {
 			logrus.Error(errorx.WithStack(err))
 		}
+		wp := worker.New[model.WinUserKyc](workerNum, worker.WithChanSize[model.WinUserKyc](int64(len(data1))), worker.WithErrHandler[model.WinUserKyc](func(err error) {
+			logrus.Error(errorx.WithStack(err))
+		}))
 		for _, item := range data1 {
-			_, ok := kycs[item.UID]
-			if !ok {
-				kycs[item.UID] = []model.WinUserKyc{}
-			}
-			kycs[item.UID] = append(kycs[item.UID], *item)
+			wp.Submit(*item)
 		}
+		wp.Start(func(data model.WinUserKyc) error {
+			val, ok := kycs.Load(data.UID)
+			if !ok {
+				kycs.Store(data.UID, []model.WinUserKyc{
+					data,
+				})
+				return nil
+			}
+			userKycs, ok := val.([]model.WinUserKyc)
+			if !ok {
+				return nil
+			}
+			userKycs = append(userKycs, data)
+			kycs.Store(data.UID, userKycs)
+			return nil
+		})
+		wp.Stop()
+
 	}
 	{
 		data1, err := oldmain.Use(clientz.MainDB()).WinCoinDepositRecord.Find()
 		if err != nil {
 			return errorx.WithStack(err)
 		}
-		for _, record := range data1 {
-			_, ok := deposits[record.UID]
-			if !ok {
-				deposits[record.UID] = map[int64]*model.WinCoinDepositRecord{}
-			}
-			deposits[record.UID][record.ID] = record
+		wp := worker.New[model.WinCoinDepositRecord](workerNum, worker.WithChanSize[model.WinCoinDepositRecord](int64(len(data1))), worker.WithErrHandler[model.WinCoinDepositRecord](func(err error) {
+			logrus.Error(errorx.WithStack(err))
+		}))
+		for _, item := range data1 {
+			wp.Submit(*item)
 		}
+		wp.Start(func(record model.WinCoinDepositRecord) error {
+			deposits.Store(record.ID, record)
+			return nil
+		})
+		wp.Stop()
 	}
 	{
 		data1, err := oldmain.Use(clientz.MainDB()).WinCoinWithdrawalRecord.Find()
 		if err != nil {
 			return errorx.WithStack(err)
 		}
-		for _, record := range data1 {
-			_, ok := withdraws[record.UID]
-			if !ok {
-				withdraws[record.UID] = map[int64]*model.WinCoinWithdrawalRecord{}
-			}
-			withdraws[record.UID][record.ID] = record
+		wp := worker.New[model.WinCoinWithdrawalRecord](workerNum, worker.WithChanSize[model.WinCoinWithdrawalRecord](int64(len(data1))), worker.WithErrHandler[model.WinCoinWithdrawalRecord](func(err error) {
+			logrus.Error(errorx.WithStack(err))
+		}))
+		for _, item := range data1 {
+			wp.Submit(*item)
 		}
+		wp.Start(func(record model.WinCoinWithdrawalRecord) error {
+			withdraws.Store(record.ID, record)
+			return nil
+		})
+		wp.Stop()
 	}
 	{
 		data1, err := oldsharding.Use(clientz.ShardingDB()).WinUserWallet.Find()
 		if err != nil {
 			return errorx.WithStack(err)
 		}
+		wp := worker.New[model.WinUserWallet](workerNum, worker.WithChanSize[model.WinUserWallet](int64(len(data1))), worker.WithErrHandler[model.WinUserWallet](func(err error) {
+			logrus.Error(errorx.WithStack(err))
+		}))
 		for _, item := range data1 {
-			_, ok := userWallets[item.UID]
-			if ok {
-				continue
-			}
-			userWallets[item.UID] = item
+			wp.Submit(*item)
 		}
+		wp.Start(func(record model.WinUserWallet) error {
+			userWallets.Store(record.UID, record)
+			return nil
+		})
+		wp.Stop()
 	}
 	return nil
 }

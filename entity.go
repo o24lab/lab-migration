@@ -10,7 +10,7 @@ import (
 	"pkg/types"
 )
 
-var userCollection = mongox.Define[WinUser]("migration", mongox.Indexes(mongo.IndexModel{
+var UserCollection = mongox.Define[WinUser]("migration", mongox.Indexes(mongo.IndexModel{
 	Keys: bson.D{
 		{Key: "user.id", Value: 1},
 	},
