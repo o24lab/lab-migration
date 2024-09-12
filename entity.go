@@ -1,37 +1,51 @@
 package migration
 
 import (
-	"application/query/userquery"
+	"domain/user/kyc"
+	"github.com/shopspring/decimal"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"migration/pkg/esx"
 	"migration/pkg/model"
 	"pkg/mongox"
 	"pkg/types"
 )
 
-var UserCollection = mongox.Define[WinUser]("migration", mongox.Indexes(mongo.IndexModel{
+const databaseName = "migration"
+
+var winUserCollection = mongox.Define[WinUser](databaseName, mongox.Indexes(mongo.IndexModel{
 	Keys: bson.D{
 		{Key: "user.id", Value: 1},
 	},
 	Options: options.Index().SetUnique(true),
 }))
 
-var userQueryCollection = mongox.Define[userquery.User]("application")
-
 type WinUser struct {
 	types.Entity `bson:",inline"`
-	User         model.WinUser `bson:"user"`
+	ParentID     types.ID        `bson:"parentID"`
+	User         model.WinUser   `bson:"user"`
+	Balance      decimal.Decimal `bson:"balance"`
+	CreateIn     string          `bson:"cmd"`
+	CreateOut    string          `bson:"cmdOut"`
 }
 
-type WinBetSlips struct {
+type WinUserKyc struct {
 	types.Entity `bson:",inline"`
-	Bet          *model.WinBetslips `json:"bet" bson:"bet"`
+	Uid          types.ID         `bson:"uid"`
+	Kyc          model.WinUserKyc `bson:"kyc"`
+	Status       kyc.Status       `bson:"status"`
+	ApplyIn      string           `bson:"applyIn"`
+	ApplyOut     string           `bson:"applyOut"`
 }
 
-var winBetSlipCollection = mongox.Define[WinBetSlips]("migration", mongox.Indexes(mongo.IndexModel{
+var winKycCollection = mongox.Define[WinUserKyc](databaseName, mongox.Indexes(mongo.IndexModel{
 	Keys: bson.D{
-		{Key: "bet.id", Value: 1},
+		{Key: "kyc.id", Value: 1},
 	},
 	Options: options.Index().SetUnique(true),
 }))
+
+var winBetSlipCollection = esx.Define[model.WinBetslips]("win_betslips")
+
+var winCoinLogCollection = esx.Define[model.WinCoinLog]("win_coin_log")

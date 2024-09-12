@@ -1,50 +1,98 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"github.com/libi/dcron/cron"
 	"github.com/sirupsen/logrus"
-	"github.com/spf13/cast"
-	"go.mongodb.org/mongo-driver/bson"
-	"math"
+	"github.com/spf13/cobra"
 	"migration"
-	"migration/pkg"
+	"os"
 	"pkg/logger"
-	"pkg/mongox"
-	"time"
 )
 
 func main() {
 	logger.Init()
-	go func() {
-		startTime := time.Now()
-		var count int64
-		c := cron.New(cron.WithSeconds())
-		c.Start()
-		_, err := c.AddFunc("0 * * * * *", func() {
-			t := time.Now()
-			result := bson.M{}
-			err := mongox.GetClient().Database("migration").RunCommand(context.TODO(), bson.D{{"collStats", "migration_winuser"}}).Decode(&result)
-			if err != nil {
-				logrus.Error(err)
-				return
-			}
-			dif := cast.ToInt64(result["count"]) - count
-			count = cast.ToInt64(result["count"])
-			logrus.WithField("start", startTime.Format(time.DateTime)).WithField("currentTime", t.Format(time.DateTime)).WithField("duration(min)", math.Ceil(t.Sub(startTime).Minutes())).WithField("userTotal", count).WithField("users/min", dif).Info("statistics")
-			go func() {
-				err1 := pkg.TgSend(fmt.Sprintf("start=%v,\ncurrent=%v,\nduration(%v min),\ntotal=%v,\nuser/min=%v", startTime.Format(time.DateTime), t.Format(time.DateTime), math.Ceil(t.Sub(startTime).Minutes()), count, dif))
-				logrus.Error(err1)
-			}()
-		})
-		if err != nil {
-			logrus.Error(err)
-		}
-	}()
-	err := migration.Migrate()
-	if err != nil {
-		logrus.Error(err)
+	var rootCmd = &cobra.Command{
+		Use:   "root",
+		Short: "root",
+		Run: func(cmd *cobra.Command, args []string) {
+			logrus.Info("start success")
+		},
 	}
-	logrus.Info("migrate success")
+	{
+		var userCmd = &cobra.Command{
+			Use:   "user",
+			Short: "user",
+			Run: func(cmd *cobra.Command, args []string) {
+				err := migration.User()
+				if err != nil {
+					logrus.Error(err)
+				}
+				logrus.Info("user migrated successfully")
+			},
+		}
+		rootCmd.AddCommand(userCmd)
+	}
+	{
+		var kycCmd = &cobra.Command{
+			Use:   "kyc",
+			Short: "kyc",
+			Run: func(cmd *cobra.Command, args []string) {
+				err := migration.Kyc()
+				if err != nil {
+					logrus.Error(err)
+				}
+				logrus.Info("kyc migrated successfully")
+			},
+		}
+		rootCmd.AddCommand(kycCmd)
+	}
+	{
+		var coinCmd = &cobra.Command{
+			Use:   "coin",
+			Short: "coin",
+			Run: func(cmd *cobra.Command, args []string) {
+				err := migration.Coin()
+				if err != nil {
+					logrus.Error(err)
+				}
+				logrus.Info("coin migrated successfully")
+			},
+		}
+		rootCmd.AddCommand(coinCmd)
+	}
+	{
+		var allCmd = &cobra.Command{
+			Use:   "all",
+			Short: "all",
+			Run: func(cmd *cobra.Command, args []string) {
+				{
+					err := migration.User()
+					if err != nil {
+						logrus.Error(err)
+					}
+					logrus.Info("user migrated successfully")
+				}
+				{
+					err := migration.Kyc()
+					if err != nil {
+						logrus.Error(err)
+					}
+					logrus.Info("kyc migrated successfully")
+				}
+				{
+					err := migration.Coin()
+					if err != nil {
+						logrus.Error(err)
+					}
+					logrus.Info("coin migrated successfully")
+				}
+				logrus.Info("migrate success")
+			},
+		}
+		rootCmd.AddCommand(allCmd)
+	}
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 }
