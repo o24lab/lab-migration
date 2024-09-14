@@ -20,7 +20,13 @@ var conf = config.EtcdYamlConfig[Config](Config{
 	Password: "1+u-89oHI=Pq3u8v39Wc",
 })
 
-var GetClient = once.F[*elastic.Client](func() *elastic.Client {
+var client *elastic.Client
+
+func init() {
+	client = getClient()
+}
+
+var getClient = once.F[*elastic.Client](func() *elastic.Client {
 	c, err := elastic.NewClient(elastic.SetURL(conf.Get().Url), elastic.SetSniff(false), elastic.SetBasicAuth(conf.Get().Username, conf.Get().Password))
 	if err != nil {
 		logrus.Fatal(err)
@@ -33,3 +39,11 @@ var GetClient = once.F[*elastic.Client](func() *elastic.Client {
 	}
 	return c
 })
+
+func GetClient() *elastic.Client {
+	if client != nil {
+		return client
+	}
+	logrus.Fatal("client not initialized")
+	return nil
+}
