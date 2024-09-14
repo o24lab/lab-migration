@@ -11,10 +11,10 @@ import (
 	"migration/pkg/model"
 	"pkg/errorx"
 	"pkg/types"
+	"sync"
 )
 
 type CoinLog interface {
-	WithBetSlip(in *model.WinBetslips) *WinCoinLog
 	Validate() errorx.Error
 	Adjust() errorx.Error
 	Deposit() errorx.Error
@@ -28,16 +28,12 @@ type WinCoinLog struct {
 	coinLog    *model.WinCoinLog         `bson:"coinLog"`
 	user       *WinUser                  `bson:"user"`
 	betSlip    *model.WinBetslips        `bson:"betSlip,omitempty"`
+	betSlipMap *sync.Map                 `bson:"betSlipMap"`
 	betDetails *model.WinBetslipsDetails `bson:"betDetails,omitempty"`
 }
 
-func NewWinCoinLog(user *WinUser, coinLog *model.WinCoinLog) CoinLog {
-	return &WinCoinLog{user: user, coinLog: coinLog}
-}
-
-func (c *WinCoinLog) WithBetSlip(in *model.WinBetslips) *WinCoinLog {
-	c.betSlip = in
-	return c
+func NewWinCoinLog(user *WinUser, coinLog *model.WinCoinLog, m *sync.Map) CoinLog {
+	return &WinCoinLog{user: user, coinLog: coinLog, betSlipMap: m}
 }
 
 func (c *WinCoinLog) Validate() errorx.Error {
@@ -128,10 +124,14 @@ func (c *WinCoinLog) Withdraw() errorx.Error {
 }
 
 func (c *WinCoinLog) PlaceBet() errorx.Error {
+	err := c.loadWinBetSlip()
+	if err != nil {
+		return err
+	}
 	if c.betSlip == nil {
 		return errorx.New("betSlip is nil")
 	}
-	_, err := betting.PlaceBetService.Request(newDDDCtx(types.ID(c.betSlip.ID)), betting.BetCommand{
+	_, err = betting.PlaceBetService.Request(newDDDCtx(types.ID(c.betSlip.ID)), betting.BetCommand{
 		BetDetailWithChildren: betting.BetDetailWithChildren{
 			BetDetail: betting.BetDetail{
 				BetID:     fmt.Sprintf("%v", c.betSlip.ID),
@@ -184,10 +184,14 @@ func (c *WinCoinLog) PlaceBet() errorx.Error {
 }
 
 func (c *WinCoinLog) Payout() errorx.Error {
+	err := c.loadWinBetSlip()
+	if err != nil {
+		return err
+	}
 	if c.betSlip == nil {
 		return errorx.New("betSlip is nil")
 	}
-	_, err := betting.SettleService.Request(newDDDCtx(types.ID(c.betSlip.ID)), betting.SettleCommand{
+	_, err = betting.SettleService.Request(newDDDCtx(types.ID(c.betSlip.ID)), betting.SettleCommand{
 		SettleDetailWithChildren: betting.SettleDetailWithChildren{
 			SettleDetail: betting.SettleDetail{
 				SettleAmount: decimal.NewFromFloat(c.betSlip.Payout),
@@ -202,14 +206,31 @@ func (c *WinCoinLog) Payout() errorx.Error {
 }
 
 func (c *WinCoinLog) Cancel() errorx.Error {
+	err := c.loadWinBetSlip()
+	if err != nil {
+		return err
+	}
 	if c.betSlip == nil {
 		return errorx.New("betSlip is nil")
 	}
-	_, err := betting.CancelService.Request(newDDDCtx(types.ID(c.betSlip.ID)), betting.CancelCommand{
+	_, err = betting.CancelService.Request(newDDDCtx(types.ID(c.betSlip.ID)), betting.CancelCommand{
 		Reason: "cancel",
 	})
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func (c *WinCoinLog) loadWinBetSlip() errorx.Error {
+	val, ok := c.betSlipMap.Load(c.coinLog.ReferID)
+	if !ok {
+		return ErrBetSlipNotExisted.WithStack()
+	}
+	b, ok := val.(model.WinBetslips)
+	if !ok {
+		return ErrBetSlipNotExisted.WithStack()
+	}
+	c.betSlip = &b
 	return nil
 }

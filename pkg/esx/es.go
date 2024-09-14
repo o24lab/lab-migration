@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/olivere/elastic/v7"
+	"io"
 	"pkg/errorx"
 )
 
@@ -39,16 +40,19 @@ func (e es[T]) GetOne(query elastic.Query) (*T, errorx.Error) {
 
 func (e es[T]) GetList(query elastic.Query, options ...EsOption) ([]T, errorx.Error) {
 	client := GetClient()
-	q := client.Scroll(e.tableIndex).Query(query).Size(1000).FetchSource(true)
+	q := client.Scroll(e.tableIndex).Query(query).Size(1000).KeepAlive("10m").FetchSource(true)
 	for _, o := range options {
 		o(q)
 	}
 	result, err := q.Do(context.Background())
 	if err != nil {
+		if err == io.EOF {
+			return nil, nil
+		}
 		return nil, errorx.WithStack(err)
 	}
 	if len(result.Hits.Hits) == 0 {
-		return nil, errorx.ErrDataNotFound.WithStack()
+		return nil, nil
 	}
 	var out []T
 	for _, hit := range result.Hits.Hits {
@@ -64,7 +68,9 @@ func (e es[T]) GetList(query elastic.Query, options ...EsOption) ([]T, errorx.Er
 		if err1 != nil {
 			return nil, errorx.WithStack(err1)
 		}
-		out = append(out, list...)
+		if list != nil {
+			out = append(out, list...)
+		}
 	}
 	return out, nil
 }

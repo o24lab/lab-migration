@@ -14,6 +14,7 @@ import (
 	"pkg/ddd"
 	"pkg/errorx"
 	"pkg/types"
+	"sync"
 )
 
 const workerNum = 10000
@@ -76,11 +77,12 @@ func Coin() errorx.Error {
 		if err != nil {
 			return err
 		}
+		m, err := initBet(user1.User.ID)
 		if err != nil {
 			return err
 		}
 		for _, winCoinLog := range winCoinLogs {
-			coinLog1 := NewWinCoinLog(&user1, &winCoinLog)
+			coinLog1 := NewWinCoinLog(&user1, &winCoinLog, m)
 			err1 := coinLog1.Validate()
 			if err1 != nil {
 				logrus.Error(err1)
@@ -100,7 +102,7 @@ func Coin() errorx.Error {
 			case 3:
 				one, err2 := winBetSlipCollection.GetOne(elastic.NewTermQuery("id", winCoinLog.ReferID))
 				if err2 == nil && one != nil {
-					err3 := coinLog1.WithBetSlip(one).PlaceBet()
+					err3 := coinLog1.PlaceBet()
 					if err3 != nil {
 						logrus.Error(err3)
 					}
@@ -108,7 +110,7 @@ func Coin() errorx.Error {
 			case 4:
 				one, err2 := winBetSlipCollection.GetOne(elastic.NewTermQuery("id", winCoinLog.ReferID))
 				if err2 == nil && one != nil {
-					err3 := coinLog1.WithBetSlip(one).Payout()
+					err3 := coinLog1.Payout()
 					if err3 != nil {
 						logrus.Error(err3)
 					}
@@ -121,7 +123,7 @@ func Coin() errorx.Error {
 			case 9:
 				one, err2 := winBetSlipCollection.GetOne(elastic.NewTermQuery("id", winCoinLog.ReferID))
 				if err2 == nil && one != nil {
-					err3 := coinLog1.WithBetSlip(one).Cancel()
+					err3 := coinLog1.Cancel()
 					if err3 != nil {
 						logrus.Error(err3)
 					}
@@ -154,6 +156,28 @@ func Coin() errorx.Error {
 	})
 	wp.Stop()
 	return nil
+}
+
+func initBet(id int32) (*sync.Map, errorx.Error) {
+	m := &sync.Map{}
+	winBetslips, err := winBetSlipCollection.GetList(elastic.NewTermQuery("xb_uid", id))
+	if err != nil {
+		return nil, err
+	}
+	wp := worker.New[model.WinBetslips, errorx.Error](workerNum, worker.WithChanSize[model.WinBetslips, errorx.Error](int64(len(winBetslips))), worker.WithErrHandler[model.WinBetslips, errorx.Error](func(err errorx.Error) {
+		if err != nil {
+			logrus.Error(err)
+		}
+	}))
+	for _, betslip := range winBetslips {
+		wp.Submit(betslip)
+	}
+	wp.Start(func(data model.WinBetslips) errorx.Error {
+		m.Store(data.ID, data)
+		return nil
+	})
+	wp.Stop()
+	return m, nil
 }
 
 type CtxOption func(ctx *ddd.Context)
