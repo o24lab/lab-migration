@@ -22,7 +22,9 @@ import (
 	"time"
 )
 
-const workerNum = 1000
+const (
+	workerNum = 10000
+)
 
 var (
 	gameTypes = map[int32]betting.GameCategory{
@@ -66,7 +68,7 @@ func Coin() errorx.Error {
 	if err1 != nil {
 		return err1
 	}
-	wp := worker.New[WinUser, errorx.Error](workerNum, worker.WithChanSize[WinUser, errorx.Error](workerNum), worker.WithErrHandler[WinUser, errorx.Error](func(err errorx.Error) {
+	wp := worker.New[WinUser, errorx.Error](workerNum, worker.WithChanSize[WinUser, errorx.Error](int64(len(*data))), worker.WithErrHandler[WinUser, errorx.Error](func(err errorx.Error) {
 		if err != nil {
 			if errorx.ErrPhoneNumberInvalid.Is(err) {
 				return
@@ -176,7 +178,7 @@ func initBet(id int32) (*sync.Map, errorx.Error) {
 	if len(winBetslips) == 0 {
 		return m, nil
 	}
-	wp := worker.New[model.WinBetslips, errorx.Error](workerNum, worker.WithChanSize[model.WinBetslips, errorx.Error](workerNum), worker.WithErrHandler[model.WinBetslips, errorx.Error](func(err errorx.Error) {
+	wp := worker.New[model.WinBetslips, errorx.Error](workerNum, worker.WithChanSize[model.WinBetslips, errorx.Error](int64(len(winBetslips))), worker.WithErrHandler[model.WinBetslips, errorx.Error](func(err errorx.Error) {
 		if err != nil {
 			logrus.Error(err)
 		}

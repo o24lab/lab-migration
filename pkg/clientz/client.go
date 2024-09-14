@@ -1,6 +1,7 @@
 package clientz
 
 import (
+	"github.com/sirupsen/logrus"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"pkg/config"
@@ -26,39 +27,61 @@ var (
 	shardingDB *gorm.DB
 )
 
+func init() {
+	{
+		db := once.F[*gorm.DB](func() *gorm.DB {
+			// 配置第一个数据库
+			db1, err := gorm.Open(mysql.Open(conf.Get().Main), &gorm.Config{})
+			if err != nil {
+				panic("failed to connect to database 1")
+			}
+			// 获取底层 *sql.DB 对象
+			sqlDB, err := db1.DB()
+			if err != nil {
+				panic("failed to get *sql.DB from gorm.DB")
+			}
+			// 配置连接池
+			sqlDB.SetMaxOpenConns(300)  // 设置最大打开连接数
+			sqlDB.SetMaxIdleConns(300)  // 设置最大闲置连接数
+			sqlDB.SetConnMaxLifetime(0) // 设置连接最大生命周期，0表示不限制
+			return db1
+		})
+		mainDB = db()
+	}
+	{
+		// 配置第二个数据库
+		db := once.F[*gorm.DB](func() *gorm.DB {
+			db2, err := gorm.Open(mysql.Open(conf.Get().Sharding), &gorm.Config{})
+			if err != nil {
+				panic("failed to connect to database 2")
+			}
+			shardingDB = db2
+			sqlDB, err := db2.DB()
+			if err != nil {
+				panic("failed to get *sql.DB from gorm.DB")
+			}
+			// 配置连接池
+			sqlDB.SetMaxOpenConns(300)  // 设置最大打开连接数
+			sqlDB.SetMaxIdleConns(300)  // 设置最大闲置连接数
+			sqlDB.SetConnMaxLifetime(0) // 设置连接最大生命周期，0表示不限制
+			return db2
+		})
+		shardingDB = db()
+	}
+}
+
 func MainDB() *gorm.DB {
 	if mainDB != nil {
 		return mainDB
 	}
-	db := once.F[*gorm.DB](func() *gorm.DB {
-		// 配置第一个数据库
-		db1, err := gorm.Open(mysql.Open(conf.Get().Main), &gorm.Config{})
-		if err != nil {
-			panic("failed to connect to database 1")
-		}
-		// 获取底层 *sql.DB 对象
-		sqlDB, err := db1.DB()
-		if err != nil {
-			panic("failed to get *sql.DB from gorm.DB")
-		}
-		// 配置连接池
-		sqlDB.SetMaxOpenConns(300)  // 设置最大打开连接数
-		sqlDB.SetMaxIdleConns(300)  // 设置最大闲置连接数
-		sqlDB.SetConnMaxLifetime(0) // 设置连接最大生命周期，0表示不限制
-		return db1
-	})
-	return db()
+	logrus.Fatal("main db is nil")
+	return nil
 }
 
 func ShardingDB() *gorm.DB {
 	if shardingDB != nil {
 		return shardingDB
 	}
-	// 配置第二个数据库
-	db2, err := gorm.Open(mysql.Open(conf.Get().Sharding), &gorm.Config{})
-	if err != nil {
-		panic("failed to connect to database 2")
-	}
-	shardingDB = db2
-	return shardingDB
+	logrus.Fatal("sharding db is nil")
+	return nil
 }
