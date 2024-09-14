@@ -36,6 +36,15 @@ func MainDB() *gorm.DB {
 		if err != nil {
 			panic("failed to connect to database 1")
 		}
+		// 获取底层 *sql.DB 对象
+		sqlDB, err := db1.DB()
+		if err != nil {
+			panic("failed to get *sql.DB from gorm.DB")
+		}
+		// 配置连接池
+		sqlDB.SetMaxOpenConns(300)  // 设置最大打开连接数
+		sqlDB.SetMaxIdleConns(300)  // 设置最大闲置连接数
+		sqlDB.SetConnMaxLifetime(0) // 设置连接最大生命周期，0表示不限制
 		return db1
 	})
 	return db()

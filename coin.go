@@ -4,20 +4,25 @@ import (
 	"context"
 	"domain/balance"
 	"domain/betting"
+	"errors"
+	"fmt"
 	"github.com/olivere/elastic/v7"
 	"github.com/sirupsen/logrus"
 	"github.com/svc0a/worker"
 	"go.mongodb.org/mongo-driver/bson"
+	"gorm.io/gorm"
 	"migration/pkg/clientz"
 	"migration/pkg/model"
 	"migration/pkg/oldmain"
+	"migration/pkg/oldsharding"
 	"pkg/ddd"
 	"pkg/errorx"
 	"pkg/types"
 	"sync"
+	"time"
 )
 
-const workerNum = 10000
+const workerNum = 1000
 
 var (
 	gameTypes = map[int32]betting.GameCategory{
@@ -61,7 +66,7 @@ func Coin() errorx.Error {
 	if err1 != nil {
 		return err1
 	}
-	wp := worker.New[WinUser, errorx.Error](workerNum, worker.WithChanSize[WinUser, errorx.Error](int64(len(*data))), worker.WithErrHandler[WinUser, errorx.Error](func(err errorx.Error) {
+	wp := worker.New[WinUser, errorx.Error](workerNum, worker.WithChanSize[WinUser, errorx.Error](workerNum), worker.WithErrHandler[WinUser, errorx.Error](func(err errorx.Error) {
 		if err != nil {
 			if errorx.ErrPhoneNumberInvalid.Is(err) {
 				return
@@ -73,7 +78,7 @@ func Coin() errorx.Error {
 		wp.Submit(item)
 	}
 	wp.Start(func(user1 WinUser) errorx.Error {
-		winCoinLogs, err := winCoinLogCollection.GetList(elastic.NewTermQuery("uid", user1.User.ID))
+		winCoinLogs, err := getCoinLog(user1.User.ID)
 		if err != nil {
 			return err
 		}
@@ -82,7 +87,7 @@ func Coin() errorx.Error {
 			return err
 		}
 		for _, winCoinLog := range winCoinLogs {
-			coinLog1 := NewWinCoinLog(&user1, &winCoinLog, m)
+			coinLog1 := NewWinCoinLog(&user1, winCoinLog, m)
 			err1 := coinLog1.Validate()
 			if err1 != nil {
 				logrus.Error(err1)
@@ -160,17 +165,24 @@ func Coin() errorx.Error {
 
 func initBet(id int32) (*sync.Map, errorx.Error) {
 	m := &sync.Map{}
-	winBetslips, err := winBetSlipCollection.GetList(elastic.NewTermQuery("xb_uid", id))
+	q := oldsharding.Use(clientz.ShardingDB()).WinBetslips.Table(fmt.Sprintf("win_betslips_%d", id/1024))
+	winBetslips, err := q.Where(q.XbUID.Eq(id)).Find()
 	if err != nil {
-		return nil, err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return m, nil
+		}
+		return nil, errorx.WithStack(err)
 	}
-	wp := worker.New[model.WinBetslips, errorx.Error](workerNum, worker.WithChanSize[model.WinBetslips, errorx.Error](int64(len(winBetslips))), worker.WithErrHandler[model.WinBetslips, errorx.Error](func(err errorx.Error) {
+	if len(winBetslips) == 0 {
+		return m, nil
+	}
+	wp := worker.New[model.WinBetslips, errorx.Error](workerNum, worker.WithChanSize[model.WinBetslips, errorx.Error](workerNum), worker.WithErrHandler[model.WinBetslips, errorx.Error](func(err errorx.Error) {
 		if err != nil {
 			logrus.Error(err)
 		}
 	}))
 	for _, betslip := range winBetslips {
-		wp.Submit(betslip)
+		wp.Submit(*betslip)
 	}
 	wp.Start(func(data model.WinBetslips) errorx.Error {
 		m.Store(data.ID, data)
@@ -178,6 +190,18 @@ func initBet(id int32) (*sync.Map, errorx.Error) {
 	})
 	wp.Stop()
 	return m, nil
+}
+
+func getCoinLog(id int32) ([]*model.WinCoinLog, errorx.Error) {
+	q := oldsharding.Use(clientz.ShardingDB()).WinCoinLog.Table(fmt.Sprintf("win_coin_log_%d", id/1024))
+	data1, err := q.Where(q.UID.Eq(id)).Find()
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, errorx.WithStack(err)
+	}
+	return data1, nil
 }
 
 type CtxOption func(ctx *ddd.Context)
@@ -202,6 +226,7 @@ func newDDDCtx(aggregateID types.ID, options ...CtxOption) *ddd.Context {
 		TraceID:       types.NewID(),
 		TransactionID: types.NewID().String(),
 		Caller:        "migration",
+		Timestamp:     time.Now().UnixMilli(),
 	}
 	for _, o := range options {
 		o(ctx)
